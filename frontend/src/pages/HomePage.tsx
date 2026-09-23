@@ -30,7 +30,7 @@ export const HomePage: React.FC = () => {
           fetchItems({ limit: 6 })
         ]);
         setStats(statsData);
-        setRecentItems(itemsData.items);
+        setRecentItems(itemsData?.items || []);
       } catch (err) {
         console.error('Failed to load dashboard data:', err);
       } finally {
