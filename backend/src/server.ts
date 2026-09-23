@@ -64,11 +64,51 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 });
 
 // 4. Server Initialization with DB connection & Auto-Seed
-async function startServer() {
-  try {
-    await db.initialize();
+let dbInitPromise: Promise<void> | null = null;
 
-    // Start listening immediately
+export async function ensureDbReady(): Promise<void> {
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      try {
+        await db.initialize();
+        const stats = await db.getDashboardStats();
+        if (stats.totalItems === 0) {
+          console.log('[Init] Database is empty. Seeding initial campus items...');
+          const createdItems = [];
+          for (const item of SEED_ITEMS) {
+            const created = await db.createItem(item);
+            createdItems.push(created);
+          }
+          for (const item of createdItems) {
+            if (item.report_type === 'lost') {
+              await aiService.runMatchingEngine(item).catch(() => {});
+            }
+          }
+          console.log(`[Init] Seeded ${createdItems.length} campus items with AI matches calculated.`);
+        }
+      } catch (err: any) {
+        console.warn('[DB Init Warning]:', err.message);
+      }
+    })();
+  }
+  return dbInitPromise;
+}
+
+// Serverless middleware to ensure DB is initialized on cold starts
+app.use(async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await ensureDbReady();
+  } catch (err) {
+    // continue anyway; db.service has in-memory fallback
+  }
+  next();
+});
+
+export async function startServer() {
+  try {
+    await ensureDbReady();
+
+    // Start listening
     app.listen(PORT, () => {
       console.log(`===================================================`);
       console.log(`🚀 Campus Lost & Found API running on port ${PORT}`);
@@ -76,30 +116,16 @@ async function startServer() {
       console.log(`🤖 Gemini AI Matching Engine: Active`);
       console.log(`===================================================`);
     });
-
-    // Auto-seed initial realistic demo data if database is empty (in background)
-    const stats = await db.getDashboardStats();
-    if (stats.totalItems === 0) {
-      console.log('[Init] Database is empty. Seeding initial campus items in background...');
-      const createdItems = [];
-      for (const item of SEED_ITEMS) {
-        const created = await db.createItem(item);
-        createdItems.push(created);
-      }
-      // Run matching in background without blocking
-      (async () => {
-        for (const item of createdItems) {
-          if (item.report_type === 'lost') {
-            await aiService.runMatchingEngine(item).catch(() => {});
-          }
-        }
-        console.log(`[Init] Seeded ${createdItems.length} campus items with AI matches calculated.`);
-      })();
-    }
   } catch (err: any) {
     console.error('Fatal error starting server:', err.message);
     process.exit(1);
   }
 }
 
-startServer();
+// If run directly (not in Vercel serverless environment), start listening
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app };
